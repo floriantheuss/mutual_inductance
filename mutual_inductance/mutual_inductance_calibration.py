@@ -2,13 +2,14 @@ import matplotlib.pyplot as plt
 from scipy import special, integrate, constants
 import numpy as np
 import itertools
-from numba import njit
 from time import time
 from copy import deepcopy
 import ray
 from psutil import cpu_count
 
 
+# Processes a calibration measurement (thick superconductor, lam << d_film) to extract
+# the phase mixing angle and magnetic-field leakage used to correct subsequent sample data.
 class MICalibration:
 	def __init__ (self, X, Y, T, f, I):
 		# sort according to temperature
@@ -59,6 +60,8 @@ class MICalibration:
 		Yave = np.mean(Y[mask])
 		angle = np.angle(Xave+1j*Yave)
 
+		# Rotate so the SC-state signal lands in the Y quadrature (Xcorr≈0 deep in SC phase).
+		# +π/2 is needed because the lock-in convention maps Y→real(MI), not X.
 		complex_corr = np.exp(1j * (-angle+np.pi/2)) * (X+1j*Y)
 		Xcorr = np.real(complex_corr)
 		Ycorr = np.imag(complex_corr)

@@ -2,7 +2,6 @@ import matplotlib.pyplot as plt
 from scipy import special, integrate, constants
 import numpy as np
 import itertools
-from numba import njit
 from time import time
 from copy import deepcopy
 import ray
@@ -10,6 +9,9 @@ from psutil import cpu_count
 from lmfit import minimize, Parameters
 
 
+# Computes mutual inductance between a drive and pickup coil separated by a given distance with a
+# superconducting thin film in between. Each coil is modelled as a stack
+# of single circular loops whose geometry is determined by the winding parameters.
 class CalcMutualInductance:
 	def __init__ (self, n_dl, n_dt, n_pl, n_pt, d_film, r_d, r_p, h, d_wire):
 		# initialize geometry parameters
@@ -18,7 +20,7 @@ class CalcMutualInductance:
 		self.n_dt = n_dt
 		self.n_pl = n_pl
 		self.n_pt = n_pt
-		# thickness d_film of measured film
+		# thickness d_film of measured superconducting film
 		self.d_film = d_film
 		# distance between closest loops in drive and pickup coils
 		self.h = h
@@ -54,7 +56,14 @@ class CalcMutualInductance:
 	
 	def assemble_full_coil_geometry (self, n_dl, n_dt, r_d, n_pl, n_pt, r_p, d_wire, h, d_film):
 		"""
-		h: minimum separation between the two coils
+		Build the full drive+pickup coil geometry and return the unique loop separations.
+
+		h is the minimum gap between the closest loops of the two coils.
+		Returns rd_array, rp_array (loop radii) and coil_sep, the unique list of
+		center-to-center separations between individual drive and pickup loops. Deduplication
+		exploits the fact that many loop pairs share the same separation (e.g. layer i of the
+		drive coil is as far from layer j of the pickup as layer i+1 of the drive is from layer j+1),
+		so M_single only needs to be evaluated once per unique distance.
 		"""
 		hd_array, rd_array = self.assemble_individual_coil(n_dl, n_dt, r_d, d_wire)
 		hp_array, rp_array = self.assemble_individual_coil(n_pl, n_pt, r_p, d_wire)
@@ -70,13 +79,15 @@ class CalcMutualInductance:
 
 
 	def M_single (self, r_d, r_p, coilSep, d_film, lam):
+		# mutual inductance integral for two circular loops separated by a
+		# superconducting film of thickness d_film and London penetration depth lam.
 		def M_integrand_single(x, r_d, r_p, coilSep, d_film, lam):
 			Xi          = np.sqrt(x**2 + 1/lam**2)
 			denominator = np.cosh(d_film*Xi) + (x**2+Xi**2)/(2*x*Xi) * np.sinh(d_film*Xi)
 			enumerator  = np.exp(-x*coilSep) * special.jv(1, x*r_d) * special.jv(1, x*r_p)
 			# enumerator  = np.exp(-x*coilSep) * special.j1(x*r_d) * special.j1(x*r_p)
 			return enumerator/denominator
-		
+
 		integral, _ = integrate.quad(M_integrand_single, 0, np.inf, args=(r_d,r_p,coilSep,d_film,lam))
 		factor   = constants.pi * constants.mu_0 * r_d * r_p
 		return integral * factor
@@ -93,6 +104,7 @@ class CalcMutualInductance:
 		MI_mat_full = MI_mat_partial[:, :, indices]
 		return MI_mat_full
 		
+	# ray is used for parallel computation
 	def start_ray (self, nb_workers=None):
 		if nb_workers is None:
 			nb_workers = cpu_count(logical=False)
@@ -103,9 +115,9 @@ class CalcMutualInductance:
 		ray.shutdown()
 	
 	@staticmethod
-	@ray.remote
+	@ray.remote  # Ray remote version of M_single for parallel evaluation across workers
 	def M_single_ray (r_d, r_p, coilSep, d_film, lam):
-		
+
 		def M_integrand_single(x, r_d, r_p, coilSep, d_film, lam):
 			Xi          = np.sqrt(x**2 + 1/lam**2)
 			denominator = np.cosh(d_film*Xi) + (x**2+Xi**2)/(2*x*Xi) * np.sinh(d_film*Xi)
@@ -138,6 +150,8 @@ class CalcMutualInductance:
 		return MI_mat_full
 	
 	def calc_MI_PD_array (self, lambda_array, save_name=None):
+		# lambda_array: London penetration depths (m) for which to evaluate MI;
+		# MI_norm = MI / MI_inf normalises to the normal-state (lam→∞) value
 		self.start_ray()
 		
 		rd_array, rp_array, coil_sep = self.assemble_full_coil_geometry(self.n_dl, self.n_dt, self.r_d, self.n_pl, self.n_pt, self.r_p, self.d_wire, self.h, self.d_film)
@@ -177,6 +191,15 @@ class CalcMutualInductance:
 
 	
 	def residual_function (self, params, ray_fit=False):
+		"""
+		lmfit residual: returns MIx_calc - MIx_data (scalar, so leastsq treats it as one residual).
+
+		params must contain:
+		  h         — coil separation (m), vary=True when fitting coil distance
+		  lam       — London penetration depth (m), vary=True when fitting penetration depth
+		  MIx_data  — measured mutual inductance (H), always vary=False (passed as a frozen Parameter
+		              rather than a regular argument because lmfit only forwards params to the residual)
+		"""
 		h        = params['h'].value
 		MIx_data = params['MIx_data'].value
 		lam      = params['lam'].value
@@ -198,6 +221,7 @@ class CalcMutualInductance:
 		return MIx_calc - MIx_data
 	
 	def fit_coil_distance (self, MIx_data, ray_fit=False):
+		# uses residual function above to fit the distance between coils to mutual inductance data
 		if ray_fit:
 			self.start_ray()
 
@@ -215,6 +239,7 @@ class CalcMutualInductance:
 			self.stop_ray()
 
 	def fit_penetration_depth (self, MIx_data, lam_guess=1e-5, ray_fit=False):
+		# uses residual function above to fit the penetration depth to mutual inductance data
 		if ray_fit:
 			self.start_ray()
 
