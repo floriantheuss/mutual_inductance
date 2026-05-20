@@ -1,102 +1,100 @@
-import matplotlib as mpl
-mpl.use('Qt5Agg')
+# Generates the theoretical MI(λ) lookup table used to convert normalised MI → penetration depth.
+# Two steps:
+#   1. Fit the coil separation h to the measured normal-state MI from the calibration run,
+#      so that the model geometry exactly matches the physical setup.
+#   2. Sweep λ over the expected range and compute MI/MI_∞ for each value, saving the result
+#      as a lookup table that process_sample_data.py reads via interpolation.
+# Run process_calibration_data.py first — its output file is read here.
+
+import os
+import sys
+# The line below makes this script runnable from any working directory without installing the package.
+# In your own analysis code, add the repo root to your PYTHONPATH instead
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import matplotlib.pyplot as plt
-from pathlib import Path
 import numpy as np
-from matplotlib.backends.backend_pdf import PdfPages
-from mutual_inductance.mutual_inductance_calibration import MICalibration
 from mutual_inductance.calculate_mutual_inductance import CalcMutualInductance
-from mutual_inductance.mutual_inductance_data import MIData
 import time
 
-############################################################
-# coil parameters
-############################################################
-coilDiam = 8 * 2.54e-5 # inner diameter of inner most loop
-d_wire    = 19e-6 # diameter of wire
-rmin     = (coilDiam+d_wire)/2
+here = os.path.dirname(os.path.abspath(__file__))
 
-# drive coil
-nTurnsD = 50 # total number of turns in coil (i.e. n_row*n_col)
-rat     = 0.28 # the ratio n_col/n_row
-n_dl    = int(np.round(np.sqrt(nTurnsD/rat)))
-n_dt    = int(np.round(np.sqrt(nTurnsD*rat)))
+############################################################
+# coil geometry parameters
+############################################################
+coilDiam = 8 * 2.54e-5  # inner diameter of the innermost loop (m)
+d_wire   = 19e-6        # wire diameter (m)
+rmin     = (coilDiam + d_wire) / 2  # radius to the centre of the innermost turn
+
+# drive coil: total turns = n_dl * n_dt
+nTurnsD = 50
+rat     = 0.28           # aspect ratio n_turns/n_layers
+n_dl    = int(np.round(np.sqrt(nTurnsD / rat)))   # number of layers
+n_dt    = int(np.round(np.sqrt(nTurnsD * rat)))   # turns per layer
 r_d     = rmin
 
-# pickup coil
+# pickup coil: total turns = n_pl * n_pt
 nTurnsP = 400
-rat     = 0.622  # This is width / height
-n_pl    = int(np.round(np.sqrt(nTurnsP/rat)))
-n_pt    = int(np.round(np.sqrt(nTurnsP*rat)))
+rat     = 0.622          # aspect ratio (width / height)
+n_pl    = int(np.round(np.sqrt(nTurnsP / rat)))
+n_pt    = int(np.round(np.sqrt(nTurnsP * rat)))
 r_p     = rmin
 
 
-########################################################################################################################
-########################################################################################################################
-# first fit the distance between the coils so that the resulting mutual inductance is what is measured in the calibration in the normal state
-calib_name = f'2025-10-31_Al_foil_cooling_calib.dat'
-path       = str( Path(__file__).absolute() )
-temp       = path.split('/')
-temp[-1]   = calib_name
-calib_file = '/'.join(temp)
-dat = np.loadtxt(calib_file, delimiter=',')
-T = dat[:,0]
-MIx = dat[:,-2]
-Tmin = 2.5
+############################################################
+# step 1: fit coil separation to the normal-state MI
+############################################################
+# Load the corrected MI_x curve from the calibration run and take its average
+# in the normal state (T > Tc) as the target value for the fit.
+calib_name = 'calibration_data_example_calib_no_phase_correction.dat'
+calib_file = os.path.join(here, calib_name)
+dat  = np.loadtxt(calib_file, delimiter=',')
+T    = dat[:, 0]
+MIx  = dat[:, -2]   # MIx_corrected is the second-to-last column
+
+Tmin = 2.5   # temperature range for the normal-state average (K)
 Tmax = 5
-mask = (T>Tmin)&(T<Tmax)
+mask    = (T > Tmin) & (T < Tmax)
 MIx_ave = np.mean(MIx[mask])
+
 plt.figure()
 plt.plot(T, MIx)
 print()
-print('this is the calibration curve you have chosen;')
-print('normal state value is evalulated as the average of the data between ', Tmin, ' K and ', Tmax, ' K;')
-print('the average mutual inductance value is: ', MIx_ave)
+print('calibration curve loaded; normal-state MI averaged between', Tmin, 'K and', Tmax, 'K')
+print('target MI_x value:', MIx_ave)
 print()
 plt.show()
 
-
-
-h = 1.07e-3
-d_film = 0 # set to zero, mimicking nothing in between the coils
+# d_film=0 removes the film from the model so we fit purely to the coil geometry
+h      = 1.07e-3   # initial guess for coil separation (m)
+d_film = 0
 MI = CalcMutualInductance(n_dl, n_dt, n_pl, n_pt, d_film, r_d, r_p, h, d_wire)
 MI.fit_coil_distance(MIx_data=MIx_ave)
-h = MI.h
-print(h)
+h = MI.h   # fitted coil separation — used for the lookup table below
+print('fitted coil separation (m):', h)
 
 
-########################################################################################################################
-########################################################################################################################
-# try to fit some extreme values of the measured mutual inductance to see where to put the bounds for the lookup table
-
-# d_film = 5e-9  # Sample film thickness
-# h = 0.0010339878004774965 # coil distance from fit above
-# MI = CalcMutualInductance(n_dl, n_dt, n_pl, n_pt, d_film, r_d, r_p, h, d_wire)
-# MI.fit_penetration_depth (MIx_data=1e-12, lam_guess=1e-6, ray_fit=False)
-
-
-########################################################################################################################
-########################################################################################################################
-# create lookup table of mutual inductance as a fct of penetration depth with numbers from above
+############################################################
+# step 2: compute MI(λ) lookup table for the sample film
+############################################################
+# Adjust PDList bounds if the measured MI_x_norm falls outside [min, max] of this range.
 PDList = np.linspace(5e-9, 5e-3, 500)
 
-print('h is: ', h)
+t1     = time.time()
+d_film = 5.1e-9   # sample film thickness (m) — update for each sample
+save_name = os.path.join(here, f'lookup_table_{np.round(d_film*1e9, 1)}nm_{calib_name}')
 
-t1 = time.time()
-d_film = 5.1e-9  # Sample film thickness
-save_name  = f'lookup_table_{np.round(d_film*1e9,1)}nm_{calib_name}'
-temp[-1]  = save_name
-save_name = '/'.join(temp)
 MI = CalcMutualInductance(n_dl, n_dt, n_pl, n_pt, d_film, r_d, r_p, h, d_wire)
-m,mn = MI.calc_MI_PD_array(PDList, save_name)
+m, mn = MI.calc_MI_PD_array(PDList, save_name)
 print()
-print('calc for ', np.round(d_film*1e9,1), ' done in ', time.time()-t1, ' seconds')
-
+print(f'lookup table for {np.round(d_film*1e9, 1)} nm film done in {time.time()-t1:.1f} s')
 
 plt.figure()
+plt.xlabel('Penetration depth (m)')
+plt.ylabel('MI (H)')
 plt.scatter(PDList, m)
 
-
 plt.figure()
+plt.xlabel('Penetration depth (m)')
+plt.ylabel('MI / MI$_\\infty$')
 plt.scatter(PDList, mn)
 plt.show()

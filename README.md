@@ -82,65 +82,83 @@ Standalone script. Given a single (X, Y) lock-in reading in the normal state, co
 Coil geometry
      │
      ▼
-1. Build lookup table   CalcMutualInductance.calc_MI_PD_array(lambda_array)
-   M/M∞  vs  λ          → saves "lookup_table.csv"
+1. Calibration run      MICalibration(X_cal, Y_cal, T_cal, f, I)
+   (thick SC film)      .perform_calibration(...)
+                        → angle, leakage, calibration.csv
      │
      ▼
-2. Calibration run      MICalibration(X_cal, Y_cal, T_cal, f, I)
-   (thick SC film)      .perform_calibration(Tphase=[0, Tmax_sc],
-                                             Tleakage=[0, Tmax_sc])
-                        → angle, leakage
+2. Fit coil distance    CalcMutualInductance(..., d_film=0, h=h_guess, ...)
+                        .fit_coil_distance(MIx_normal_state)
+                        → fitted h
      │
      ▼
-3. Sample measurement   MIData(X, Y, T, f, I,
+3. Build lookup table   CalcMutualInductance(..., d_film=d_sample, h=h_fitted, ...)
+   M/M∞  vs  λ          .calc_MI_PD_array(lambda_array)
+                        → lookup_table.csv
+     │
+     ▼
+4. Sample measurement   MIData(X, Y, T, f, I,
    processing               leakage=leakage,
                              correction_angle=angle)
                         .process_data()
                         → MIx_norm(T)
      │
      ▼
-4. Convert to λ(T)      .convert_MI_to_PD("lookup_table.csv")
+5. Convert to λ(T)      .convert_MI_to_PD("lookup_table.csv")
                         → penetration_depth(T)
                         → plots λ(T) and λ₀²/λ(T)²
 ```
 
-### Step 1 — generate a lookup table
+### Step 1 — calibration
+
+```python
+from mutual_inductance.mutual_inductance_calibration import MICalibration
+
+# X, Y: lock-in voltages (V); T: temperature (K); f: frequency (Hz); I: drive current (A)
+cal = MICalibration(X_cal, Y_cal, T_cal, f=317, I=100e-6)
+cal.perform_calibration(save_name='calibration.csv')
+angle   = cal.angle     # mixing angle (rad)   — also saved in calibration.csv header
+leakage = cal.leakage   # MI_x leakage (H)     — also saved in calibration.csv header
+```
+
+### Step 2 — fit coil separation
+
+The coil separation `h` cannot be measured precisely enough mechanically, so it is fitted by
+matching the model to the measured MI in the normal state (where λ → ∞ and the film has no effect).
+Setting `d_film=0` removes the film from the model for this fit.
 
 ```python
 from mutual_inductance.calculate_mutual_inductance import CalcMutualInductance
 import numpy as np
 
+# MIx_normal: normal-state MI_x read from calibration.csv (second-to-last column, averaged above Tc)
 MI = CalcMutualInductance(
-    n_dl=4, n_dt=13,        # drive coil: 4 layers, 13 turns/layer
-    n_pl=25, n_pt=16,       # pickup coil: 25 layers, 16 turns/layer
-    d_film=40e-9,           # film thickness (m)
-    r_d=1.5e-4, r_p=1.5e-4,# coil inner radii (m)
-    h=1.07e-3,              # coil separation (m)
-    d_wire=19e-6,           # wire diameter (m)
+    n_dl=4, n_dt=13, n_pl=25, n_pt=16,
+    d_film=0,               # no film — fitting coil geometry only
+    r_d=1.5e-4, r_p=1.5e-4,
+    h=1.07e-3,              # initial guess (m)
+    d_wire=19e-6,
 )
+MI.fit_coil_distance(MIx_data=MIx_normal)
+h = MI.h                    # fitted coil separation — use this in step 3
+```
 
-lambda_array = np.logspace(-8, -4, 200)   # 10 nm → 100 µm
+### Step 3 — generate lookup table
+
+```python
+lambda_array = np.linspace(5e-9, 5e-3, 500)   # adjust bounds to cover the measured MI range
+
+MI = CalcMutualInductance(
+    n_dl=4, n_dt=13, n_pl=25, n_pt=16,
+    d_film=40e-9,           # actual sample film thickness (m)
+    r_d=1.5e-4, r_p=1.5e-4,
+    h=h,                    # fitted value from step 2
+    d_wire=19e-6,
+)
 MI_array, MI_norm = MI.calc_MI_PD_array(lambda_array, save_name='lookup_table.csv')
 ```
 
-### Step 2 — calibration
-
-```python
-from mutual_inductance.mutual_inductance_calibration import MICalibration
-import numpy as np
-
-# X, Y: lock-in voltages (V); T: temperature (K); f: frequency (Hz); I: drive current (A)
-cal = MICalibration(X_cal, Y_cal, T_cal, f=317, I=100e-6)
-cal.perform_calibration(
-    Tphase=[0, 4],      # temperature range deep in SC phase for phase correction
-    Tleakage=[0, 4],    # same range for leakage estimation
-    save_name='calibration.csv',
-)
-angle   = cal.angle     # mixing angle (rad)
-leakage = cal.leakage   # MI_x leakage (H)
-```
-
-### Step 3 & 4 — process sample and extract λ(T)
+### Steps 4 & 5 — process sample and extract λ(T)
 
 ```python
 from mutual_inductance.mutual_inductance_data import MIData

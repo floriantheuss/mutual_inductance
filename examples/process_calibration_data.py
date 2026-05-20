@@ -1,39 +1,35 @@
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-from pathlib import Path
+# Processes a calibration measurement taken on a thick superconducting film (λ ≪ d_film).
+# At low T the film acts as a perfect magnetic screen, which lets us extract two corrections
+# needed for every sample measurement:
+#   1. phase mixing angle  — cable/capacitive coupling rotates the X/Y lock-in channels
+#   2. field leakage       — flux that bypasses the sample and reaches the pickup coil
+# Both values are saved together with the corrected MI curves.
+
+import os
+import sys
+# The line below makes this script runnable from any working directory without installing the package.
+# In your own analysis code, add the repo root to your PYTHONPATH instead
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
-from matplotlib.backends.backend_pdf import PdfPages
 from mutual_inductance.mutual_inductance_calibration import MICalibration
-from mutual_inductance.calculate_mutual_inductance import CalcMutualInductance
-from mutual_inductance.mutual_inductance_data import MIData
 
-path      = str( Path(__file__).absolute() )
+here = os.path.dirname(os.path.abspath(__file__))
 
-# create data filename
-name      = '2025-10-31_Al_foil_cooling'
-temp      = path.split('/')
-temp[-3]  = 'data'
-temp[-1]  = f'data/{name}.dat'
-data_name = '/'.join(temp)
+name      = 'calibration_data_example'
+data_name = os.path.join(here, 'example_data', f'{name}.dat')
+save_name = os.path.join(here, f'{name}_calib_no_phase_correction.dat')
 
-# create save name
-temp      = path.split('/')
-# temp[-1]  = f'{name}_calib.dat'
-temp[-1]  = f'{name}_calib_no_phase_correction.dat'
-save_name = '/'.join(temp)
-
-# load data
+# columns: T (K), X (V), Y (V)  — X/Y are the in-phase and quadrature lock-in outputs
 dat = np.loadtxt(data_name, skiprows=1)
-X = dat[:,12]/10 # the factor of 10 is because on the lockin we had "expand" on, which multiplies everything with a factor of 10
-Y = dat[:,13]/10 # the factor of 10 is because on the lockin we had "expand" on, which multiplies everything with a factor of 10
-T = dat[:,5]
-f = 6e4
-V = 3 # drive current voltage
-R = 9.93e3 # drop down resistance
+T = dat[:,0]
+X = dat[:,1]
+Y = dat[:,2]
+
+f = 6e4       # lock-in reference frequency (Hz)
+V = 3         # drive voltage (V)
+R = 9.93e3    # series resistance (Ω) — sets the drive current
 I = V/R
 
-
-# process data	
-MI = MICalibration(X,Y,T,f,I)
-# MI.perform_calibration(save_name=save_name, phase_correction=True)
-MI.perform_calibration(save_name=save_name, phase_correction=False)
+MI = MICalibration(X, Y, T, f, I)
+# phase_correction=True: let the calibration routine determine (and correct for) the phase angle from the low-T SC state;
+MI.perform_calibration(save_name=save_name, phase_correction=True)
