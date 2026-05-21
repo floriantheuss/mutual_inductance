@@ -45,7 +45,7 @@ r_p     = rmin
 ############################################################
 # Load the corrected MI_x curve from the calibration run and take its average
 # in the normal state (T > Tc) as the target value for the fit.
-calib_name = 'calibration_data_example_calib_no_phase_correction.dat'
+calib_name = 'calibration_data_example_calib.dat'
 calib_file = os.path.join(here, calib_name)
 dat  = np.loadtxt(calib_file, delimiter=',')
 T    = dat[:, 0]
@@ -80,7 +80,7 @@ print('fitted coil separation (m):', h)
 PDList = np.linspace(5e-9, 5e-3, 500)
 
 t1     = time.time()
-d_film = 5.1e-9   # sample film thickness (m) — update for each sample
+d_film = 7e-9   # sample film thickness (m) — update for each sample
 save_name = os.path.join(here, f'lookup_table_{np.round(d_film*1e9, 1)}nm_{calib_name}')
 
 MI = CalcMutualInductance(n_dl, n_dt, n_pl, n_pt, d_film, r_d, r_p, h, d_wire)

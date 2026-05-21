@@ -17,7 +17,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 
 name      = 'calibration_data_example'
 data_name = os.path.join(here, 'example_data', f'{name}.dat')
-save_name = os.path.join(here, f'{name}_calib_no_phase_correction.dat')
+save_name = os.path.join(here, f'{name}_calib.dat')
 
 # columns: T (K), X (V), Y (V)  — X/Y are the in-phase and quadrature lock-in outputs
 dat = np.loadtxt(data_name, skiprows=1)
